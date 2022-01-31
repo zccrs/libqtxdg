@@ -109,7 +109,7 @@ class QIconCacheGtkReader
 {
 public:
     explicit QIconCacheGtkReader(const QString &themeDir);
-    QVector<const char *> lookup(QStringView);
+    QList<const char *> lookup(QStringView);
     bool isValid() const { return m_isValid; }
     bool reValid(bool infoRefresh);
 private:
@@ -220,9 +220,9 @@ static quint32 icon_name_hash(const char *p)
     For example, this would return { "32x32/apps", "24x24/apps" , ... }
  */
 
-QVector<const char *> QIconCacheGtkReader::lookup(QStringView name)
+QList<const char *> QIconCacheGtkReader::lookup(QStringView name)
 {
-    QVector<const char *> ret;
+    QList<const char *> ret;
     if (!isValid() || name.isEmpty())
         return ret;
 
@@ -411,7 +411,7 @@ QThemeIconInfo XdgIconLoader::findIconHelper(const QString &themeName,
 
         // Add all relevant files
         for (int i = 0; i < contentDirs.size(); ++i) {
-            QVector<QIconDirInfo> subDirs = theme.keyList();
+            QList<QIconDirInfo> subDirs = theme.keyList();
 
             // Try to reduce the amount of subDirs by looking in the GTK+ cache in order to save
             // a massive amount of file stat (especially if the icon is not there)
@@ -419,7 +419,7 @@ QThemeIconInfo XdgIconLoader::findIconHelper(const QString &themeName,
             if (cache->isValid() || cache->reValid(true)) {
                 const auto result = cache->lookup(iconNameFallback);
                 if (cache->isValid()) {
-                    const QVector<QIconDirInfo> subDirsCopy = subDirs;
+                    const QList<QIconDirInfo> subDirsCopy = subDirs;
                     subDirs.clear();
                     subDirs.reserve(result.count());
                     for (const char *s : result) {
@@ -711,18 +711,18 @@ static int directorySizeDistance(const QIconDirInfo &dir, int iconsize, int icon
     return INT_MAX;
 }
 
-QIconLoaderEngineEntry *XdgIconLoaderEngine::entryForSize(const QSize &size, int scale)
+QIconLoaderEngineEntry *XdgIconLoaderEngine::entryForSize(const QThemeIconInfo &info, const QSize &size, int scale)
 {
     int iconsize = qMin(size.width(), size.height());
 
-    // Note that m_info.entries are sorted so that png-files
+    // Note that info.entries are sorted so that png-files
     // come first
 
-    const int numEntries = m_info.entries.size();
+    const int numEntries = info.entries.size();
 
     // Search for exact matches first
     for (int i = 0; i < numEntries; ++i) {
-        QIconLoaderEngineEntry *entry = m_info.entries.at(i);
+        QIconLoaderEngineEntry *entry = info.entries.at(i);
         if (directoryMatchesSize(entry->dir, iconsize, scale)) {
             return entry;
         }
@@ -732,7 +732,7 @@ QIconLoaderEngineEntry *XdgIconLoaderEngine::entryForSize(const QSize &size, int
     int minimalSize = INT_MAX;
     QIconLoaderEngineEntry *closestMatch = nullptr;
     for (int i = 0; i < numEntries; ++i) {
-        QIconLoaderEngineEntry *entry = m_info.entries.at(i);
+        QIconLoaderEngineEntry *entry = info.entries.at(i);
         int distance = directorySizeDistance(entry->dir, iconsize, scale);
         if (distance < minimalSize) {
             minimalSize  = distance;
@@ -756,7 +756,7 @@ QSize XdgIconLoaderEngine::actualSize(const QSize &size, QIcon::Mode mode,
 
     ensureLoaded();
 
-    QIconLoaderEngineEntry *entry = entryForSize(size);
+    QIconLoaderEngineEntry *entry = entryForSize(m_info, size);
     if (entry) {
         const QIconDirInfo &dir = entry->dir;
         if (dir.type == QIconDirInfo::Scalable || dynamic_cast<ScalableEntry *>(entry))
@@ -961,7 +961,7 @@ QPixmap XdgIconLoaderEngine::pixmap(const QSize &size, QIcon::Mode mode,
 {
     ensureLoaded();
 
-    QIconLoaderEngineEntry *entry = entryForSize(size);
+    QIconLoaderEngineEntry *entry = entryForSize(m_info, size);
     if (entry)
         return entry->pixmap(size, mode, state);
 
@@ -973,33 +973,53 @@ QString XdgIconLoaderEngine::key() const
     return QLatin1String("XdgIconLoaderEngine");
 }
 
+QString XdgIconLoaderEngine::iconName()
+{
+    ensureLoaded();
+    return m_info.iconName;
+}
+
+bool XdgIconLoaderEngine::isNull()
+{
+    ensureLoaded();
+    return m_info.entries.isEmpty();
+}
+
+QPixmap XdgIconLoaderEngine::scaledPixmap(const QSize &size, QIcon::Mode mode, QIcon::State state, qreal scale)
+{
+    ensureLoaded();
+    const int integerScale = qCeil(scale);
+    QIconLoaderEngineEntry *entry = entryForSize(m_info, size / integerScale, integerScale);
+    return entry ? entry->pixmap(size, mode, state) : QPixmap();
+}
+
+QList<QSize> XdgIconLoaderEngine::availableSizes(QIcon::Mode mode, QIcon::State state)
+{
+    Q_UNUSED(mode);
+    Q_UNUSED(state);
+    ensureLoaded();
+    const int N = m_info.entries.size();
+    QList<QSize> sizes;
+    sizes.reserve(N);
+
+    // Gets all sizes from the DirectoryInfo entries
+    for (int i = 0; i < N; ++i) {
+        const QIconLoaderEngineEntry *entry = m_info.entries.at(i);
+        if (entry->dir.type == QIconDirInfo::Fallback) {
+            sizes.append(QIcon(entry->filename).availableSizes());
+        } else {
+            int size = entry->dir.size;
+            sizes.append(QSize(size, size));
+        }
+    }
+    return sizes;
+}
+
 void XdgIconLoaderEngine::virtual_hook(int id, void *data)
 {
     ensureLoaded();
 
     switch (id) {
-    case QIconEngine::AvailableSizesHook:
-        {
-            QIconEngine::AvailableSizesArgument &arg
-                    = *reinterpret_cast<QIconEngine::AvailableSizesArgument*>(data);
-            const int N = m_info.entries.size();
-            QList<QSize> sizes;
-            sizes.reserve(N);
-
-            // Gets all sizes from the DirectoryInfo entries
-            for (int i = 0; i < N; ++i) {
-                int size = m_info.entries.at(i)->dir.size;
-                sizes.append(QSize(size, size));
-            }
-            arg.sizes.swap(sizes); // commit
-        }
-        break;
-    case QIconEngine::IconNameHook:
-        {
-            QString &name = *reinterpret_cast<QString*>(data);
-            name = m_info.iconName;
-        }
-        break;
     case QIconEngine::IsNullHook:
         {
             *reinterpret_cast<bool*>(data) = m_info.entries.isEmpty();
@@ -1010,7 +1030,7 @@ void XdgIconLoaderEngine::virtual_hook(int id, void *data)
             QIconEngine::ScaledPixmapArgument &arg = *reinterpret_cast<QIconEngine::ScaledPixmapArgument*>(data);
             // QIcon::pixmap() multiplies size by the device pixel ratio.
             const int integerScale = qCeil(arg.scale);
-            QIconLoaderEngineEntry *entry = entryForSize(arg.size / integerScale, integerScale);
+            QIconLoaderEngineEntry *entry = entryForSize(m_info, arg.size / integerScale, integerScale);
             arg.pixmap = entry ? entry->pixmap(arg.size, arg.mode, arg.state) : QPixmap();
         }
         break;

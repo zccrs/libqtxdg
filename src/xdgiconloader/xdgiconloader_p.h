@@ -80,12 +80,17 @@ public:
     bool read(QDataStream &in) override;
     bool write(QDataStream &out) const override;
 
+    QString iconName() override;
+    bool isNull() override;
+    QPixmap scaledPixmap(const QSize &size, QIcon::Mode mode, QIcon::State state, qreal scale) override;
+    QList<QSize> availableSizes(QIcon::Mode mode, QIcon::State state) override;
+
 private:
     QString key() const override;
     bool hasIcon() const;
     void ensureLoaded();
     void virtual_hook(int id, void *data) override;
-    QIconLoaderEngineEntry *entryForSize(const QSize &size, int scale = 1);
+    QIconLoaderEngineEntry *entryForSize(const QThemeIconInfo &info, const QSize &size, int scale = 1);
     XdgIconLoaderEngine(const XdgIconLoaderEngine &other);
     QThemeIconInfo m_info;
     QString m_iconName;
